@@ -1,0 +1,107 @@
+#!/bin/bash
+#
+# halt          This file is executed by init when it goes into runlevel
+#               0 (halt) or runlevel 6 (reboot). It kills all processes,
+#               unmounts file systems and then either halts or reboots.
+#
+# Author:       Miquel van Smoorenburg, <miquels@drinkel.nl.mugnet.org>
+#               Modified for RHS Linux by Damien Neil
+#               Modified for LXC by Stanislaw Klekot
+#
+
+NOLOCALE=1
+. /etc/init.d/functions
+
+# LXC: no disabling crypto
+
+kill_all() {
+    local STRING rc
+
+    STRING=$1
+    echo -n "$STRING "
+    shift
+    /sbin/killall5 "$@"
+    rc=$?
+    # Retval: 0: success 1: error 2: no processes found to kill
+    if [ "$rc" == 1 ]; then
+        failure $"$STRING"
+    else
+        success $"$STRING"
+    fi
+    echo
+    return $rc
+}
+
+# See how we were called.
+case "$0" in
+   *halt)
+	message=$"Halting system..."
+	command="/sbin/halt"
+	;;
+   *reboot)
+	message=$"Please stand by while rebooting the system..."
+	command="/sbin/reboot"
+	;;
+   *)
+	echo $"$0: call me as 'halt' or 'reboot' please!"
+	exit 1
+	;;
+esac
+case "$1" in
+   *start)
+   	;;
+   *)
+	echo $"Usage: $0 {start}"
+	exit 1
+	;;
+esac
+
+# Kill all processes.
+[ "${BASH+bash}" = bash ] && enable kill
+
+kill_all $"Sending all processes the TERM signal..." -15 $OMITARGS
+# No need to sleep and kill -9 if no processes to kill were found
+if [ "$?" == 0 ]; then
+    sleep 2
+    kill_all $"Sending all processes the KILL signal..." -9 $OMITARGS
+fi
+
+# Write to wtmp file before unmounting /var
+/sbin/halt -w
+
+# LXC: ALSA won't be used in a container
+# LXC: don't save random seed (/dev/urandom)
+# LXC: clock is controlled by host OS
+# LXC: skip umounting filesystems
+# LXC: skip disabling swap
+# LXC: no disabling quota
+# LXC: no disabling disk encryption
+
+HALTARGS="-d"
+[ "$INIT_HALT" != "HALT" ] && HALTARGS="$HALTARGS -p"
+
+if [ -x /sbin/halt.local ]; then
+   # NOTE: arguments to halt.local are CentOS-specific thing, RHEL doesn't
+   # have them
+   /sbin/halt.local "$message" "$command" "$HALTARGS"
+fi
+
+# Tell init to re-exec itself.
+kill -TERM 1
+
+# LXC: no remounting RO
+# LXC: no stopping mdadm (it should run on host OS)
+
+# Now halt or reboot.
+echo $"$message"
+if [ -f /fastboot ]; then
+ echo $"On the next boot fsck will be skipped."
+elif [ -f /forcefsck ]; then
+ echo $"On the next boot fsck will be forced."
+fi
+
+# LXC: UPS should be controlled by host OS
+# LXC: no kexec; it's a container, it doesn't have own kernel
+
+
+exec $command $HALTARGS

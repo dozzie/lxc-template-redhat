@@ -1,0 +1,300 @@
+#!/bin/sh
+#
+# LXC CentOS installation script.
+#
+
+set -e
+
+#-----------------------------------------------------------------------------
+# some setup
+
+suite=centos-6
+
+initscripts=/usr/lib/lxc/initscripts
+#suites=/etc/yumbootstrap/suites
+yumbootstrap() {
+  /usr/sbin/yumbootstrap \
+    --verbose --noninteractive \
+    ${suites:+--suite-dir=$suites} \
+    "$@"
+}
+
+# XXX: unused at the moment
+arch=$(uname -m)
+case $arch in i[3-6]86) arch=i686 ;; esac
+
+chroot_cache_dir=/var/cache/lxc/$suite/rootfs-$arch
+guest_iface=eth0
+
+#-----------------------------------------------------------------------------
+# helper functions
+
+replace_script() {
+  script=$1
+  replacement=$2
+
+  cp $script $script.orig
+  cat $replacement > $script
+}
+
+bdev() {
+  root_dir=$1
+  mode=$2
+  owner=$3
+  major=$4
+  minor=$5
+  name=$6
+
+  mknod --mode=$mode $root_dir$name b $major $minor
+  chroot $root_dir chown $owner $name
+}
+
+cdev() {
+  root_dir=$1
+  mode=$2
+  owner=$3
+  major=$4
+  minor=$5
+  name=$6
+
+  mknod --mode=$mode $root_dir$name c $major $minor
+  chroot $root_dir chown $owner $name
+}
+
+#-----------------------------------------------------------------------------
+# download cache
+
+prepare_cache() { # $suite $target
+  suite=$1
+  target=$2
+
+  yumbootstrap $suite $target
+  # create devices
+  rm -rf $target/dev/*
+
+  cdev $target 666 root:root  1 3  /dev/null
+  cdev $target 666 root:root  1 5  /dev/zero
+  cdev $target 666 root:root  1 7  /dev/full
+
+  cdev $target 600 root:tty   5 1  /dev/console
+  cdev $target 666 root:tty   5 0  /dev/tty
+  cdev $target 600 root:tty   4 0  /dev/tty0
+  cdev $target 600 root:tty   4 1  /dev/tty1
+  cdev $target 600 root:tty   4 2  /dev/tty2
+  cdev $target 600 root:tty   4 3  /dev/tty3
+  cdev $target 600 root:tty   4 4  /dev/tty4
+  cdev $target 666 root:tty   5 2  /dev/ptmx  # /dev/pts/ptmx is dynamic
+
+  cdev $target 666 root:root  1 9  /dev/urandom
+  cdev $target 666 root:root  1 8  /dev/random
+
+  # is this even needed? Debian ships this, though
+  cdev $target 640 root:kmem  1 1  /dev/mem
+  cdev $target 640 root:kmem  1 2  /dev/kmem
+  cdev $target 640 root:kmem  1 4  /dev/port
+
+  for n in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16; do
+    bdev $target 640 root:disk 1 $n /dev/ram$n
+  done
+  for n in 0 1 2 3 4 5 6 7; do
+    bdev $target 640 root:disk 7 $n /dev/loop$n
+  done
+
+  mkfifo --mode=600 $target/dev/initctl
+
+  ln -sf /proc/kcore   $target/dev/core
+  ln -sf /proc/self/fd $target/dev/fd
+  ln -sf fd/0          $target/dev/stdin
+  ln -sf fd/1          $target/dev/stdout
+  ln -sf fd/2          $target/dev/stderr
+  ln -sf ram1          $target/dev/ram
+
+  mkdir --mode=755 $target/dev/pts
+  mkdir --mode=755 $target/dev/shm
+  mkdir --mode=755 $target/dev/shm/network
+}
+
+#-----------------------------------------------------------------------------
+# copy cache to workplace
+
+copy_cache_to_rootdir() { # $cache_dir $root_dir
+  cache_dir=$1
+  root_dir=$2
+
+  cp -a $cache_dir $root_dir
+}
+
+#-----------------------------------------------------------------------------
+# configure guest OS
+
+configure_guest() { # $root_dir $name
+  root_dir=$1
+  name=$2
+
+  #---------------------------------------------------------
+  # inittab
+
+  # TODO: detect RH5 (SysV) vs. RH6 (upstart) vs. RH7 (systemd)
+
+  # RH6
+  sed -i 's:^ACTIVE_CONSOLES=.*:ACTIVE_CONSOLES="/dev/console /dev/tty1":' \
+    $root_dir/etc/sysconfig/init
+
+  #---------------------------------------------------------
+  # SELinux
+
+  # TODO: `echo SELINUX=disabled >> /etc/selinux/config' if applicable
+
+  #---------------------------------------------------------
+  # networking
+
+  (
+    echo "NETWORKING=yes"
+    echo "NETWORKING_IPV6=no"
+    echo "HOSTNAME=$name"
+    echo "#GATEWAY="
+  ) > $root_dir/etc/sysconfig/network
+
+  (
+    echo "DEVICE=$guest_iface"
+    echo "BOOTPROTO=none"
+    echo "ONBOOT=yes"
+    echo "# preserve settings set by host"
+    echo "#BROADCAST="
+    echo "#NETWORK="
+    echo "#NETMASK="
+    echo "#IPADDR="
+    echo "USERCTL=no"
+  ) > $root_dir/etc/sysconfig/network-scripts/ifcfg-$guest_iface
+
+  (
+    # TODO: fill with something sane
+    echo "# empty resolv.conf"
+  ) > $root_dir/etc/resolv.conf
+
+  #---------------------------------------------------------
+  # repositories
+
+  # TODO
+
+  #---------------------------------------------------------
+  # locale
+
+  # TODO
+
+  #---------------------------------------------------------
+  # initscripts (+chkconfig)
+
+  # RH6
+  chroot $root_dir chkconfig netfs off
+  chroot $root_dir chkconfig udev-post off
+
+  # RH5+6
+  replace_script $root_dir/etc/rc.d/rc.sysinit  $initscripts/centos.rc.sysinit
+  replace_script $root_dir/etc/rc.d/init.d/halt $initscripts/centos.halt
+
+  #---------------------------------------------------------
+  # root password
+
+  echo root:root | chroot $root_dir /usr/sbin/chpasswd
+  echo "root password was set to \"root\", remember to change it"
+}
+
+
+#-----------------------------------------------------------------------------
+# add container configuration
+
+container_add_devices() { # $lxc_config $root_dir
+  lxc_config=$1
+  root_dir=$2
+
+  (
+    echo "lxc.tty = 4"
+    echo "lxc.pts = 1024"
+    echo "lxc.rootfs = $root_dir"
+    echo "lxc.cgroup.devices.deny = a"
+
+    echo "# /dev/null, /dev/zero"
+    echo "lxc.cgroup.devices.allow = c 1:3 rwm" # null
+    echo "lxc.cgroup.devices.allow = c 1:5 rwm" # zero
+
+    echo "# consoles"
+    echo "lxc.cgroup.devices.allow = c 5:1 rwm" # console
+    echo "lxc.cgroup.devices.allow = c 5:0 rwm" # tty
+    echo "lxc.cgroup.devices.allow = c 4:0 rwm" # tty0
+    echo "lxc.cgroup.devices.allow = c 4:1 rwm" # tty1
+    echo "lxc.cgroup.devices.allow = c 5:2 rwm" # ptmx
+    echo "lxc.cgroup.devices.allow = c 136:* rwm" # pts/*
+
+    echo "# /dev/{,u}random"
+    echo "lxc.cgroup.devices.allow = c 1:9 rwm" # urandom
+    echo "lxc.cgroup.devices.allow = c 1:8 rwm" # random
+
+    echo "# RTC"
+    echo "lxc.cgroup.devices.allow = c 254:0 rwm"
+  ) >> $lxc_config
+}
+
+container_add_mountpoints() {
+  lxc_config=$1
+  root_dir=$2
+
+  (
+    echo "# mountpoints"
+    echo "lxc.mount.entry=proc   $root_dir/proc    proc   nodev,noexec,nosuid  0 0"
+    echo "lxc.mount.entry=devpts $root_dir/dev/pts devpts defaults             0 0"
+    echo "lxc.mount.entry=sysfs  $root_dir/sys     sysfs  defaults             0 0"
+  ) >> $lxc_config
+}
+
+#-----------------------------------------------------------------------------
+# command line options
+
+path=
+hostname=
+
+while [ $# != 0 ]; do
+  case $1 in
+    -h|--help) echo "Usage: ${0##*/} --path ... [--name ...]"; exit ;;
+    -p|--path) path=$2; shift ;;
+    --path=*)  path=${1#--*=} ;;
+    -n|--name) hostname=$2; shift ;;
+    --name=*)  hostname=${1#--*=} ;;
+    --) shift; break ;;
+    *) break ;;
+  esac
+
+  shift
+done
+
+if [ -z "$path" ]; then
+  echo "--path is required"
+  exit 1
+fi
+
+if [ `id -u` != 0 ]; then
+  echo "This script should be run as root"
+  exit 1
+fi
+
+rootfs=$path/rootfs
+
+#-----------------------------------------------------------------------------
+# actual operations
+
+# running them in separate subshells ensures that no variable gets reset
+# magically
+
+if [ ! -d $chroot_cache_dir ]; then
+  ( prepare_cache $suite $chroot_cache_dir )
+fi
+
+( copy_cache_to_rootdir $chroot_cache_dir $rootfs )
+
+( configure_guest $rootfs $hostname )
+
+( container_add_devices     $path/config $rootfs )
+( container_add_mountpoints $path/config $rootfs )
+
+#-----------------------------------------------------------------------------
+# vim:ft=sh

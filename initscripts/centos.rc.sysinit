@@ -1,0 +1,159 @@
+#!/bin/bash
+#
+# /etc/rc.d/rc.sysinit - run once at boot time
+#
+# Taken in part from Miquel van Smoorenburg's bcheckrc.
+# Trimmed and adjusted by Stanislaw Klekot to work smoothly under LXC.
+#
+# NOTE: SELinux bits were removed.
+# NOTE: Interactive start was removed.
+#
+
+HOSTNAME=$(/bin/hostname)
+
+set -m
+
+if [ -f /etc/sysconfig/network ]; then
+    . /etc/sysconfig/network
+fi
+if [ -z "$HOSTNAME" -o "$HOSTNAME" = "(none)" ]; then
+    HOSTNAME=localhost
+fi
+
+# LXC: mounting /proc and /sys is done by lxc-start
+
+. /etc/init.d/functions
+
+PLYMOUTH=
+if [ -x /bin/plymouth ]; then
+  PLYMOUTH=yes
+  plymouth() { /bin/plymouth "$@"; }
+elif [ -x /usr/bin/plymouth ]; then
+  PLYMOUTH=yes
+  plymouth() { /usr/bin/plymouth "$@"; }
+fi
+
+# LXC: SELinux parts removed
+
+# Print a text banner.
+echo -en $"\t\tWelcome to "
+if [ -f /etc/system-release ]; then
+    read -r system_release < /etc/system-release
+else
+    read -r system_release < /etc/redhat-release
+fi
+case $system_release in
+    *"Red Hat"*)
+        [ "$BOOTUP" = "color" ] && echo -en "\\033[0;31m"
+        echo -en "Red Hat"
+        [ "$BOOTUP" = "color" ] && echo -en "\\033[0;39m"
+        PRODUCT=$(sed "s/Red Hat \(.*\) release.*/\1/" /etc/system-release)
+        echo " $PRODUCT"
+        ;;
+
+    *Fedora*)
+        [ "$BOOTUP" = "color" ] && echo -en "\\033[0;34m"
+        echo -en "Fedora"
+        [ "$BOOTUP" = "color" ] && echo -en "\\033[0;39m"
+        PRODUCT=$(sed "s/Fedora \(.*\) \?release.*/\1/" /etc/system-release)
+        echo " $PRODUCT"
+        ;;
+
+    *CentOS*)
+        [ "$BOOTUP" = "color" ] && echo -en "\\033[0;36m"
+        echo -en "CentOS"
+        [ "$BOOTUP" = "color" ] && echo -en "\\033[0;39m"
+        PRODUCT=$(sed "s/CentOS \(.*\) \?release.*/\1/" /etc/system-release)
+        echo " $PRODUCT"
+        ;;
+
+    *)
+        PRODUCT=$(sed "s/ release.*//g" /etc/system-release)
+        echo "$PRODUCT"
+        ;;
+esac
+
+# LXC: removed loading modules
+# LXC: removed starting udev
+# LXC: removed mounting /dev/pts
+
+# Configure kernel parameters
+update_boot_stage RCkernelparam
+if type apply_sysctl > /dev/null 2>&1; then
+    # new style (5.7+, 6.2+) sysctl handling
+    apply_sysctl
+else
+    # old style sysctl
+    sysctl -e -p /etc/sysctl.conf >/dev/null 2>&1
+fi
+
+# Set the hostname.
+update_boot_stage RChostname
+action $"Setting hostname ${HOSTNAME}: " hostname ${HOSTNAME}
+[ -n "${NISDOMAIN}" ] && domainname ${NISDOMAIN}
+
+# LXC: removed waiting for SCSI devices
+# LXC: removed device mapper, dm-crypt, multipath, MD RAID, LVM
+# LXC: removed fsck and R/O root
+# LXC: removed quota
+# LXC: removed maintaining mtab
+# LXC: removed mounting filesystems
+# LXC: removed initailizing urandom
+# LXC: removed configuring machine (setting password, keyboard, authconfig)
+
+# Clean out /.
+rm -f /fastboot /fsckoptions /forcefsck /.autofsck /forcequotacheck /halt \
+	/poweroff /.suspended &> /dev/null
+
+# Do we need (w|u)tmpx files? We don't set them up, but the sysadmin might...
+_NEED_XFILES=
+[ -f /var/run/utmpx -o -f /var/log/wtmpx ] && _NEED_XFILES=1
+
+# Clean up /var.
+rm -rf /var/lock/cvs/* /var/run/screen/*
+find /var/lock /var/run ! -type d -exec rm -f {} \;
+rm -f /var/lib/rpm/__db* &> /dev/null
+rm -f /var/gdm/.gdmfifo &> /dev/null
+
+# LXC: removed waiting for prompt
+
+# Clean up utmp/wtmp
+> /var/run/utmp
+touch /var/log/wtmp
+chgrp utmp /var/run/utmp /var/log/wtmp
+chmod 0664 /var/run/utmp /var/log/wtmp
+if [ -n "$_NEED_XFILES" ]; then
+  > /var/run/utmpx
+  touch /var/log/wtmpx
+  chgrp utmp /var/run/utmpx /var/log/wtmpx
+  chmod 0664 /var/run/utmpx /var/log/wtmpx
+fi
+
+# Clean up various /tmp bits
+rm -f /tmp/.X*-lock /tmp/.lock.* /tmp/.gdm_socket /tmp/.s.PGSQL.*
+rm -rf /tmp/.X*-unix /tmp/.ICE-unix /tmp/.font-unix /tmp/hsperfdata_* \
+       /tmp/kde-* /tmp/ksocket-* /tmp/mc-* /tmp/mcop-* /tmp/orbit-*  \
+       /tmp/scrollkeeper-*  /tmp/ssh-* \
+       /dev/.in_sysinit
+
+# Make ICE directory
+mkdir -m 1777 -p /tmp/.ICE-unix >/dev/null 2>&1
+chown root:root /tmp/.ICE-unix
+
+# LXC: removed swap
+# LXC: removed boot time profiles
+
+# Now that we have all of our basic modules loaded and the kernel going,
+# let's dump the syslog ring somewhere so we can find it later
+[ -f /var/log/dmesg ] && mv -f /var/log/dmesg /var/log/dmesg.old
+dmesg -s 131072 > /var/log/dmesg
+
+[ "$PROMPT" != no -a -n "$PLYMOUTH" ] && plymouth --ignore-keystroke=Ii
+
+# Let rhgb know that we're leaving rc.sysinit
+if [ -n "$PLYMOUTH" ]; then
+    plymouth --sysinit
+elif [ -x /usr/bin/rhgb-client ] && /usr/bin/rhgb-client --ping ; then
+    /usr/bin/rhgb-client --sysinit
+fi
+

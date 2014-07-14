@@ -36,18 +36,20 @@ fi
 # LXC: SELinux parts removed
 
 # Print a text banner.
-echo -en $"\t\tWelcome to "
 if [ -f /etc/system-release ]; then
-    read -r system_release < /etc/system-release
+    RELEASE_FILE=/etc/system-release
 else
-    read -r system_release < /etc/redhat-release
+    RELEASE_FILE=/etc/redhat-release
 fi
+
+echo -en $"\t\tWelcome to "
+read -r system_release < $RELEASE_FILE
 case $system_release in
     *"Red Hat"*)
         [ "$BOOTUP" = "color" ] && echo -en "\\033[0;31m"
         echo -en "Red Hat"
         [ "$BOOTUP" = "color" ] && echo -en "\\033[0;39m"
-        PRODUCT=$(sed "s/Red Hat \(.*\) release.*/\1/" /etc/system-release)
+        PRODUCT=$(sed "s/Red Hat \(.*\) release.*/\1/" $RELEASE_FILE)
         echo " $PRODUCT"
         ;;
 
@@ -55,7 +57,7 @@ case $system_release in
         [ "$BOOTUP" = "color" ] && echo -en "\\033[0;34m"
         echo -en "Fedora"
         [ "$BOOTUP" = "color" ] && echo -en "\\033[0;39m"
-        PRODUCT=$(sed "s/Fedora \(.*\) \?release.*/\1/" /etc/system-release)
+        PRODUCT=$(sed "s/Fedora \(.*\) \?release.*/\1/" $RELEASE_FILE)
         echo " $PRODUCT"
         ;;
 
@@ -63,12 +65,12 @@ case $system_release in
         [ "$BOOTUP" = "color" ] && echo -en "\\033[0;36m"
         echo -en "CentOS"
         [ "$BOOTUP" = "color" ] && echo -en "\\033[0;39m"
-        PRODUCT=$(sed "s/CentOS \(.*\) \?release.*/\1/" /etc/system-release)
+        PRODUCT=$(sed "s/CentOS \(.*\) \?release.*/\1/" $RELEASE_FILE)
         echo " $PRODUCT"
         ;;
 
     *)
-        PRODUCT=$(sed "s/ release.*//g" /etc/system-release)
+        PRODUCT=$(sed "s/ release.*//g"  $RELEASE_FILE)
         echo "$PRODUCT"
         ;;
 esac

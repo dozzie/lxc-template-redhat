@@ -1,6 +1,6 @@
 #!/bin/sh
 #
-# LXC CentOS installation script.
+# LXC Red Hat/CentOS installation script.
 #
 
 set -e
@@ -135,7 +135,9 @@ copy_cache_to_rootdir() { # $cache_dir $root_dir
   root_dir=$2
 
   echo "## Copying installed OS from cache to $root_dir"
-  cp -a $cache_dir $root_dir
+  mkdir -p $root_dir
+  # XXX: assume there are no dot files
+  cp -a $cache_dir/* $root_dir
 }
 
 #-----------------------------------------------------------------------------

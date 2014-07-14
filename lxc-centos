@@ -8,26 +8,33 @@ set -e
 #-----------------------------------------------------------------------------
 # some setup
 
-suite=centos-6
+#SUITE=centos-5
+SUITE=${0##*/lxc-}
 
-initscripts=/usr/lib/lxc/initscripts
-#suites=/etc/yumbootstrap/suites
-yumbootstrap() {
-  /usr/sbin/yumbootstrap \
-    --verbose --noninteractive \
-    ${suites:+--suite-dir=$suites} \
-    "$@"
-}
+# Directory with centos.halt and centos.rc.sysinit, which are replacements for
+# RH/CentOS 5 and 6 initscripts.
+INITSCRIPTS=/usr/local/lib/lxc/initscripts
 
-# XXX: unused at the moment
-arch=$(uname -m)
-case $arch in i[3-6]86) arch=i686 ;; esac
+# This is the default value used by yumbootstrap
+#YUMBOOTSTRAP_SUITE_DIR=/etc/yumbootstrap/suites
 
-chroot_cache_dir=/var/cache/lxc/$suite/rootfs-$arch
-guest_iface=eth0
+# XXX: unused at the moment, except for $INSTALLED_OS_CACHE_DIR
+ARCH=$(uname -m)
+case $ARCH in i[3-6]86) ARCH=i686 ;; esac
+
+INSTALLED_OS_CACHE_DIR=/var/cache/lxc/$SUITE/rootfs-$ARCH
+# Network interface name from the guest's perspective
+GUEST_IFACE=eth0
 
 #-----------------------------------------------------------------------------
 # helper functions
+
+yumbootstrap() {
+  /usr/local/sbin/yumbootstrap \
+    --verbose --noninteractive \
+    ${YUMBOOTSTRAP_SUITE_DIR:+--suite-dir=$YUMBOOTSTRAP_SUITE_DIR} \
+    "$@"
+}
 
 replace_script() {
   script=$1
@@ -68,8 +75,14 @@ prepare_cache() { # $suite $target
   suite=$1
   target=$2
 
-  yumbootstrap $suite $target
+  echo "## Installing suite $suite to $target"
+  if ! yumbootstrap $suite $target; then
+    rm -rf $target
+    exit 1
+  fi
+
   # create devices
+  echo "## Creating usable /dev in $target"
   rm -rf $target/dev/*
 
   cdev $target 666 root:root  1 3  /dev/null
@@ -121,6 +134,7 @@ copy_cache_to_rootdir() { # $cache_dir $root_dir
   cache_dir=$1
   root_dir=$2
 
+  echo "## Copying installed OS from cache to $root_dir"
   cp -a $cache_dir $root_dir
 }
 
@@ -128,78 +142,206 @@ copy_cache_to_rootdir() { # $cache_dir $root_dir
 # configure guest OS
 
 configure_guest() { # $root_dir $name
+  read release < $1/etc/redhat-release
+  case $release in
+    CentOS*)    distro=centos ;;
+    "Red Hat"*) distro=redhat ;;
+    Fedora*)    distro=fedora ;;
+    *)          distro=`set -- $release; echo $1 | tr A-Z a-z`;;
+  esac
+  release=$(echo "$release" | sed 's/.*release \([0-9.]\+\).*/\1/')
+  echo "## Configuring guest OS (detected $distro release $release)"
+
+  ( setup_login_ttys   "$1" "$2" "$distro" "$release" )
+  ( configure_selinux  "$1" "$2" "$distro" "$release" )
+  ( setup_networking   "$1" "$2" "$distro" "$release" )
+  ( setup_repositories "$1" "$2" "$distro" "$release" )
+  ( setup_locale       "$1" "$2" "$distro" "$release" )
+  ( setup_services     "$1" "$2" "$distro" "$release" )
+  ( set_root_password  "$1" "$2" "$distro" "$release" )
+}
+
+#---------------------------------------------------------
+# setup login TTYs
+
+setup_login_ttys() {
+  root_dir=$1
+  #name=$2
+  distro=$3
+  release=$4
+
+  case $distro-$release in
+    centos-5|redhat-5|centos-5.*|redhat-5.*)
+      echo "### setting mingetty in /etc/inittab"
+      # leave /dev/tty1 (lxc-console -t 1) and add /dev/console (lxc-start
+      # without -d option)
+      sed -i \
+        -e 's/^\([^#].*mingetty.*tty[^1]\)/#\1/' \
+        -e '/mingetty.*tty1/i0:2345:respawn:/sbin/mingetty console' \
+        $root_dir/etc/inittab
+    ;;
+    centos-6|redhat-6|centos-6.*|redhat-6.*)
+      echo "### setting ACTIVE_CONSOLES in /etc/sysconfig/init"
+      # set /dev/tty1 (lxc-console -t 1) and /dev/console (lxc-start without
+      # -d option)
+      sed -i 's:^ACTIVE_CONSOLES=.*:ACTIVE_CONSOLES="/dev/console /dev/tty1":' \
+        $root_dir/etc/sysconfig/init
+    ;;
+    *)
+      # TODO: RH7
+      # TODO: Fedora
+      echo "### unrecognized distribution, not configuring TTYs"
+    ;;
+  esac
+}
+
+#---------------------------------------------------------
+# SELinux
+
+configure_selinux() {
+  #root_dir=$1
+  #name=$2
+  #distro=$3
+  #release=$4
+
+  : TODO
+  # `echo SELINUX=disabled >> /etc/selinux/config' if applicable
+}
+
+#---------------------------------------------------------
+# networking
+
+setup_networking() {
   root_dir=$1
   name=$2
+  #distro=$3
+  #release=$4
+  # $GUEST_IFACE comes from global settings
 
-  #---------------------------------------------------------
-  # inittab
+  echo "### Configuring networking"
 
-  # TODO: detect RH5 (SysV) vs. RH6 (upstart) vs. RH7 (systemd)
-
-  # RH6
-  sed -i 's:^ACTIVE_CONSOLES=.*:ACTIVE_CONSOLES="/dev/console /dev/tty1":' \
-    $root_dir/etc/sysconfig/init
-
-  #---------------------------------------------------------
-  # SELinux
-
-  # TODO: `echo SELINUX=disabled >> /etc/selinux/config' if applicable
-
-  #---------------------------------------------------------
-  # networking
-
+  echo "#### setting hostname"
   (
     echo "NETWORKING=yes"
     echo "NETWORKING_IPV6=no"
     echo "HOSTNAME=$name"
     echo "#GATEWAY="
   ) > $root_dir/etc/sysconfig/network
+  echo
+  echo "Remember to set GATEWAY=... in /etc/sysconfig/network"
+  echo
 
+  echo "#### configuring $GUEST_IFACE in guest"
   (
-    echo "DEVICE=$guest_iface"
+    echo "DEVICE=$GUEST_IFACE"
     echo "BOOTPROTO=none"
     echo "ONBOOT=yes"
-    echo "# preserve settings set by host"
+    echo "# preserve address et al. set by host"
     echo "#BROADCAST="
     echo "#NETWORK="
     echo "#NETMASK="
     echo "#IPADDR="
     echo "USERCTL=no"
-  ) > $root_dir/etc/sysconfig/network-scripts/ifcfg-$guest_iface
+  ) > $root_dir/etc/sysconfig/network-scripts/ifcfg-$GUEST_IFACE
+  echo
+  echo "$GUEST_IFACE set to keep address from host (lxc.network.ipv4 and lxc.network.flags=up)."
+  echo "Update /etc/sysconfig/network-scripts/ifcfg-$GUEST_IFACE" \
+       "if this is not what you want."
+  echo
 
+  echo "#### configuring resolver (/etc/resolv.conf)"
   (
     # TODO: fill with something sane
     echo "# empty resolv.conf"
   ) > $root_dir/etc/resolv.conf
-
-  #---------------------------------------------------------
-  # repositories
-
-  # TODO
-
-  #---------------------------------------------------------
-  # locale
-
-  # TODO
-
-  #---------------------------------------------------------
-  # initscripts (+chkconfig)
-
-  # RH6
-  chroot $root_dir chkconfig netfs off
-  chroot $root_dir chkconfig udev-post off
-
-  # RH5+6
-  replace_script $root_dir/etc/rc.d/rc.sysinit  $initscripts/centos.rc.sysinit
-  replace_script $root_dir/etc/rc.d/init.d/halt $initscripts/centos.halt
-
-  #---------------------------------------------------------
-  # root password
-
-  echo root:root | chroot $root_dir /usr/sbin/chpasswd
-  echo "root password was set to \"root\", remember to change it"
+  echo
+  echo "resolv.conf left empty. You probably want to adjust it."
+  echo
 }
 
+#---------------------------------------------------------
+# repositories
+
+setup_repositories() {
+  #root_dir=$1
+  #name=$2
+  #distro=$3
+  #release=$4
+
+  echo "## configuring default Yum repositories"
+  : TODO
+  echo
+  echo "Yum repositories left intact as they came from \`yum' package."
+  echo
+}
+
+#---------------------------------------------------------
+# locale
+
+setup_locale() {
+  #root_dir=$1
+  #name=$2
+  #distro=$3
+  #release=$4
+
+  : TODO
+}
+
+#---------------------------------------------------------
+# initscripts (+chkconfig)
+
+setup_services() {
+  root_dir=$1
+  #name=$2
+  distro=$3
+  release=$4
+  # $INITSCRIPTS comes from global settings
+
+  case $distro-$release in
+    centos-[56]|redhat-[56]|centos-[56].*|redhat-[56].*)
+      echo "## putting trimmed down \`rc.sysinit' and \`halt' initscripts"
+      replace_script $root_dir/etc/rc.d/rc.sysinit  \
+                     $INITSCRIPTS/centos.rc.sysinit
+      replace_script $root_dir/etc/rc.d/init.d/halt \
+                     $INITSCRIPTS/centos.halt
+
+      echo "## disabling unneeded services"
+      chroot $root_dir chkconfig --list | while read svc state; do
+        # keep those enabled
+        case $svc in
+          network|syslog|rsyslog|crond|sshd|messagebus) continue ;;
+        esac
+        # disable service if it is enabled anywhere
+        case $state in
+          *[0-6]:on*) chroot $root_dir chkconfig $svc off ;;
+        esac
+      done
+    ;;
+    *)
+      # TODO: RH7
+      # TODO: Fedora
+      echo "## unrecognized distribution, not updating initscripts"
+    ;;
+  esac
+}
+
+#---------------------------------------------------------
+# root password
+
+set_root_password() {
+  root_dir=$1
+  #name=$2
+  #distro=$3
+  #release=$4
+
+  echo "## setting root password"
+  echo root:root | chroot $root_dir /usr/sbin/chpasswd
+  echo
+  echo "root password was set to \"root\", remember to change it"
+  echo
+}
+
+#---------------------------------------------------------
 
 #-----------------------------------------------------------------------------
 # add container configuration
@@ -208,6 +350,7 @@ container_add_devices() { # $lxc_config $root_dir
   lxc_config=$1
   root_dir=$2
 
+  echo "## adding devices configuration to LXC container"
   (
     echo "lxc.tty = 4"
     echo "lxc.pts = 1024"
@@ -239,6 +382,7 @@ container_add_mountpoints() {
   lxc_config=$1
   root_dir=$2
 
+  echo "## adding mountpoints to LXC container"
   (
     echo "# mountpoints"
     echo "lxc.mount.entry=proc   $root_dir/proc    proc   nodev,noexec,nosuid  0 0"
@@ -250,16 +394,16 @@ container_add_mountpoints() {
 #-----------------------------------------------------------------------------
 # command line options
 
-path=
-hostname=
+LXC_PATH=
+GUEST_NAME=
 
 while [ $# != 0 ]; do
   case $1 in
     -h|--help) echo "Usage: ${0##*/} --path ... [--name ...]"; exit ;;
-    -p|--path) path=$2; shift ;;
-    --path=*)  path=${1#--*=} ;;
-    -n|--name) hostname=$2; shift ;;
-    --name=*)  hostname=${1#--*=} ;;
+    -p|--path) LXC_PATH=$2; shift ;;
+    --path=*)  LXC_PATH=${1#--*=} ;;
+    -n|--name) GUEST_NAME=$2; shift ;;
+    --name=*)  GUEST_NAME=${1#--*=} ;;
     --) shift; break ;;
     *) break ;;
   esac
@@ -267,7 +411,7 @@ while [ $# != 0 ]; do
   shift
 done
 
-if [ -z "$path" ]; then
+if [ -z "$LXC_PATH" ]; then
   echo "--path is required"
   exit 1
 fi
@@ -277,7 +421,7 @@ if [ `id -u` != 0 ]; then
   exit 1
 fi
 
-rootfs=$path/rootfs
+ROOTFS=$LXC_PATH/rootfs
 
 #-----------------------------------------------------------------------------
 # actual operations
@@ -285,16 +429,16 @@ rootfs=$path/rootfs
 # running them in separate subshells ensures that no variable gets reset
 # magically
 
-if [ ! -d $chroot_cache_dir ]; then
-  ( prepare_cache $suite $chroot_cache_dir )
+if [ ! -d $INSTALLED_OS_CACHE_DIR ]; then
+  ( prepare_cache $SUITE $INSTALLED_OS_CACHE_DIR )
 fi
 
-( copy_cache_to_rootdir $chroot_cache_dir $rootfs )
+( copy_cache_to_rootdir $INSTALLED_OS_CACHE_DIR $ROOTFS )
 
-( configure_guest $rootfs $hostname )
+( configure_guest $ROOTFS $GUEST_NAME )
 
-( container_add_devices     $path/config $rootfs )
-( container_add_mountpoints $path/config $rootfs )
+( container_add_devices     $LXC_PATH/config $ROOTFS )
+( container_add_mountpoints $LXC_PATH/config $ROOTFS )
 
 #-----------------------------------------------------------------------------
 # vim:ft=sh

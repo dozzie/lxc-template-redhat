@@ -173,7 +173,7 @@ setup_login_ttys() {
   release=$4
 
   case $distro-$release in
-    centos-5|redhat-5|centos-5.*|redhat-5.*)
+    centos-4.*|redhat-4|centos-5|redhat-5|centos-5.*|redhat-5.*)
       echo "### setting mingetty in /etc/inittab"
       # leave /dev/tty1 (lxc-console -t 1) and add /dev/console (lxc-start
       # without -d option)
@@ -303,7 +303,7 @@ setup_services() {
   # $INITSCRIPTS comes from global settings
 
   case $distro-$release in
-    centos-[56]|redhat-[56]|centos-[56].*|redhat-[56].*)
+    centos-[456]|redhat-[456]|centos-[456].*|redhat-[456].*)
       echo "## putting trimmed down \`rc.sysinit' and \`halt' initscripts"
       replace_script $root_dir/etc/rc.d/rc.sysinit  \
                      $INITSCRIPTS/centos.rc.sysinit

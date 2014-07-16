@@ -137,7 +137,7 @@ copy_cache_to_rootdir() { # $cache_dir $root_dir
   echo "## Copying installed OS from cache to $root_dir"
   mkdir -p $root_dir
   # XXX: assume there are no dot files
-  cp -a $cache_dir/* $root_dir
+  cp -x -a $cache_dir/* $root_dir
 }
 
 #-----------------------------------------------------------------------------

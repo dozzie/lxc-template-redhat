@@ -192,7 +192,10 @@ setup_login_ttys() {
     *)
       # TODO: RH7
       # TODO: Fedora
-      echo "### unrecognized distribution, not configuring TTYs"
+      echo "### not configuring TTYs"
+      echo
+      echo "I have no TTY configuration prepared for $distro-$release"
+      echo
     ;;
   esac
 }
@@ -322,7 +325,10 @@ setup_services() {
     *)
       # TODO: RH7
       # TODO: Fedora
-      echo "## unrecognized distribution, not updating initscripts"
+      echo "## not updating initscripts"
+      echo
+      echo "I have no initscripts prepared for $distro-$release"
+      echo
     ;;
   esac
 }

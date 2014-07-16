@@ -9,6 +9,11 @@
 # NOTE: Interactive start was removed.
 #
 
+# LXC: CentOS 4 umounts /proc (coming from parent) early; let's mount it back
+if [ ! -d /proc/$$ ]; then
+    mount -n -t proc /proc /proc
+fi
+
 HOSTNAME=$(/bin/hostname)
 
 set -m
@@ -105,7 +110,7 @@ action $"Setting hostname ${HOSTNAME}: " hostname ${HOSTNAME}
 
 # Clean out /.
 rm -f /fastboot /fsckoptions /forcefsck /.autofsck /forcequotacheck /halt \
-	/poweroff /.suspended &> /dev/null
+	  /poweroff /.suspended &> /dev/null
 
 # Do we need (w|u)tmpx files? We don't set them up, but the sysadmin might...
 _NEED_XFILES=
